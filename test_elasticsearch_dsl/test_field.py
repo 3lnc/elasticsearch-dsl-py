@@ -1,7 +1,35 @@
+from datetime import datetime
+from dateutil import tz
+
 import pytest
 
 from elasticsearch_dsl import field
 
+def test_boolean_deserialization():
+    bf = field.Boolean()
+
+    assert not bf.deserialize("false")
+    assert not bf.deserialize(False)
+    assert not bf.deserialize("")
+    assert not bf.deserialize(0)
+
+    assert bf.deserialize(True)
+    assert bf.deserialize("true")
+    assert bf.deserialize(1)
+
+def test_date_field_can_have_default_tz():
+    f = field.Date(default_timezone='UTC')
+    now = datetime.now()
+
+    now_with_tz = f._deserialize(now)
+
+    assert now_with_tz.tzinfo == tz.gettz('UTC')
+    assert now.isoformat() + '+00:00' == now_with_tz.isoformat()
+
+    now_with_tz = f._deserialize(now.isoformat())
+
+    assert now_with_tz.tzinfo == tz.gettz('UTC')
+    assert now.isoformat() + '+00:00' == now_with_tz.isoformat()
 
 def test_custom_field_car_wrap_other_field():
     class MyField(field.CustomField):
