@@ -3,8 +3,9 @@ from ..utils import AttrDict, AttrList
 from .hit import Hit, HitMeta
 
 class Response(AttrDict):
-    def __init__(self, search, response):
+    def __init__(self, search, response, doc_class=None):
         super(AttrDict, self).__setattr__('_search', search)
+        super(AttrDict, self).__setattr__('_doc_class', doc_class)
         super(Response, self).__init__(response)
 
     def __iter__(self):
@@ -27,22 +28,15 @@ class Response(AttrDict):
         return len(self.hits)
 
     def __getstate__(self):
-        return (self._d_, self._search)
+        return (self._d_, self._search, self._doc_class)
 
     def __setstate__(self, state):
         super(AttrDict, self).__setattr__('_d_', state[0])
         super(AttrDict, self).__setattr__('_search', state[1])
+        super(AttrDict, self).__setattr__('_doc_class', state[2])
 
     def success(self):
         return self._shards.total == self._shards.successful and not self.timed_out
-
-    def _get_result(self, hit):
-        dt = hit.get('_type')
-        for t in hit.get('inner_hits', ()):
-            hit['inner_hits'][t] = Response(self._search, hit['inner_hits'][t])
-        callback = self._search._doc_type_map.get(dt, Hit)
-        callback = getattr(callback, 'from_es', callback)
-        return callback(hit)
 
     @property
     def hits(self):
@@ -50,7 +44,7 @@ class Response(AttrDict):
             h = self._d_['hits']
 
             try:
-                hits = AttrList(map(self._get_result, h['hits']))
+                hits = AttrList(map(self._search._get_result, h['hits']))
             except AttributeError as e:
                 # avoid raising AttributeError since it will be hidden by the property
                 raise TypeError("Could not parse hits.", e)

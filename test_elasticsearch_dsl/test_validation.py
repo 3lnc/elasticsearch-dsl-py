@@ -1,25 +1,21 @@
 from datetime import datetime
 
-from elasticsearch_dsl import DocType, Nested, Text, Date, Object, Boolean, Integer
-from elasticsearch_dsl.field import InnerObjectWrapper
+from elasticsearch_dsl import DocType, Nested, Text, Date, Object, Boolean, Integer, InnerDoc
 from elasticsearch_dsl.exceptions import ValidationException
 
 from pytest import raises
 
-class Author(InnerObjectWrapper):
+class Author(InnerDoc):
+    name = Text(required=True)
+    email = Text(required=True)
+
     def clean(self):
+        print(self, type(self), self.name)
         if self.name.lower() not in self.email:
             raise ValidationException('Invalid email!')
 
 class BlogPost(DocType):
-    authors = Nested(
-        required=True,
-        doc_class=Author,
-        properties={
-            'name': Text(required=True),
-            'email': Text(required=True)
-        }
-    )
+    authors = Nested(Author, required=True)
     created = Date()
     inner = Object()
 
@@ -57,8 +53,9 @@ def test_validation_works_for_lists_of_values():
     class DT(DocType):
         i = Date(required=True)
 
+    dt = DT(i=[datetime.now(), 'not date'])
     with raises(ValidationException):
-        DT(i=[datetime.now(), 'not date'])
+        dt.full_clean()
 
     dt = DT(i=[datetime.now(), datetime.now()])
     assert None is dt.full_clean()
@@ -101,7 +98,7 @@ def test_boolean_doesnt_treat_false_as_empty():
 
 
 def test_custom_validation_on_nested_gets_run():
-    d = BlogPost(authors=[{'name': 'Honza', 'email': 'king@example.com'}], created=None)
+    d = BlogPost(authors=[Author(name='Honza', email='king@example.com')], created=None)
 
     assert isinstance(d.authors[0], Author)
 

@@ -1,24 +1,26 @@
 from datetime import datetime
 from pytz import timezone
+from ipaddress import ip_address
 
-from elasticsearch import ConflictError, NotFoundError, RequestError
+from elasticsearch import ConflictError, NotFoundError
 
-from elasticsearch_dsl import DocType, Date, Text, Keyword, construct_field, Mapping
+from elasticsearch_dsl import DocType, Date, Text, Keyword, Mapping, InnerDoc, \
+    Object, Nested, MetaField, Q, Long, Boolean, Double, Binary, Ip
 from elasticsearch_dsl.utils import AttrList
 
-from pytest import raises
+from pytest import raises, fixture
 
-user_field = construct_field('object')
-user_field.field('name', 'text', fields={'raw': construct_field('keyword')})
+class User(InnerDoc):
+    name = Text(fields={'raw': Keyword()})
 
 class Wiki(DocType):
-    owner = user_field
+    owner = Object(User)
 
     class Meta:
         index = 'test-wiki'
 
 class Repository(DocType):
-    owner = user_field
+    owner = Object(User)
     created_at = Date()
     description = Text(analyzer='snowball')
     tags = Keyword()
@@ -41,9 +43,86 @@ class Commit(DocType):
         doc_type = 'doc'
         mapping = Mapping('doc')
 
+class Comment(InnerDoc):
+    content = Text()
+    author = Object(User)
+    class Meta:
+        dynamic = MetaField(False)
+
+class PullRequest(DocType):
+    comments = Nested(Comment)
+    class Meta:
+        index = 'test-prs'
+
+class SerializationDoc(DocType):
+    i = Long()
+    b = Boolean()
+    d = Double()
+    bin = Binary()
+    ip = Ip()
+
+    class Meta:
+        index = 'test-serialization'
+
+@fixture
+def pull_request(write_client):
+    PullRequest.init()
+    pr = PullRequest(_id=42, comments=[Comment(content='Hello World!', author=User(name='honzakral'))])
+    pr.save(refresh=True)
+    return pr
+
+def test_serialization(write_client):
+    SerializationDoc.init()
+    write_client.index(index='test-serialization', doc_type='doc', id=42,
+                       body={
+                           'i': [1, 2, "3", None],
+                           'b': [True, False, "true", "false", None],
+                           'd': [0.1, "-0.1", None],
+                           "bin": ['SGVsbG8gV29ybGQ=', None],
+                           'ip': ['::1', '127.0.0.1', None]
+                       })
+    sd = SerializationDoc.get(id=42)
+
+    assert sd.i == [1, 2, 3, None]
+    assert sd.b == [True, False, True, False, None]
+    assert sd.d == [0.1, -0.1, None]
+    assert sd.bin == [b'Hello World', None]
+    assert sd.ip == [ip_address(u'::1'), ip_address(u'127.0.0.1'), None]
+
+    assert sd.to_dict() == {
+        'b': [True, False, True, False, None],
+        'bin': [b'SGVsbG8gV29ybGQ=', None],
+        'd': [0.1, -0.1, None],
+        'i': [1, 2, 3, None],
+        'ip': ['::1', '127.0.0.1', None]
+    }
+
+
+def test_nested_inner_hits_are_wrapped_properly(pull_request):
+    s = PullRequest.search().query('nested', inner_hits={}, path='comments',
+                                   query=Q('match', comments__content='hello'))
+
+    response = s.execute()
+    pr = response.hits[0]
+    assert isinstance(pr, PullRequest)
+    assert isinstance(pr.comments[0], Comment)
+
+    comment = pr.meta.inner_hits.comments.hits[0]
+    assert isinstance(comment, Comment)
+
+def test_nested_top_hits_are_wrapped_properly(pull_request):
+    s = PullRequest.search()
+    s.aggs.bucket('comments', 'nested', path='comments').metric('hits', 'top_hits', size=1)
+
+    r = s.execute()
+
+    print(r._d_)
+    assert isinstance(r.aggregations.comments.hits.hits[0], Comment)
+
+
 def test_update_object_field(write_client):
     Wiki.init()
-    w = Wiki(owner={'name': 'Honza Kral'}, _id='elasticsearch-py')
+    w = Wiki(owner=User(name='Honza Kral'), _id='elasticsearch-py')
     w.save()
 
     w.update(owner=[{'name': 'Honza'}, {'name': 'Nick'}])

@@ -9,7 +9,11 @@ layer for your application.
 Mappings
 --------
 
-The mapping definition follows a similar pattern to the query dsl:
+If you wish to create mappings manually you can use the ``Mapping`` class, for
+more advanced use cases, however, we recommend you use the :ref:`doc_type`
+abstraction in combination with :ref:`index` (or ``IndexTemplate``) to define
+index-level settings and properties. The mapping definition follows a similar
+pattern to the query dsl:
 
 .. code:: python
 
@@ -25,9 +29,11 @@ The mapping definition follows a similar pattern to the query dsl:
     m.field('category', 'text', fields={'raw': Keyword()})
 
     # you can also create a field manually
-    comment = Nested()
-    comment.field('author', Text())
-    comment.field('created_at', Date())
+    comment = Nested(
+                     properties={
+                        'author': Text(),
+                        'created_at': Date()
+                     })
 
     # and attach it to the mapping
     m.field('comments', comment)
@@ -99,6 +105,8 @@ specify type (``nGram`` in our example).
     either not exist or be closed. To create multiple ``DocType``-defined
     mappings you can use the :ref:`index` object.
 
+.. _doc_type:
+
 DocType
 -------
 
@@ -109,7 +117,7 @@ If you want to create a model-like wrapper around your documents, use the
 
     from datetime import datetime
     from elasticsearch_dsl import DocType, Date, Nested, Boolean, \
-        analyzer, InnerObjectWrapper, Completion, Keyword, Text
+        analyzer, InnerDoc, Completion, Keyword, Text
 
     html_strip = analyzer('html_strip',
         tokenizer="standard",
@@ -117,7 +125,11 @@ If you want to create a model-like wrapper around your documents, use the
         char_filter=["html_strip"]
     )
 
-    class Comment(InnerObjectWrapper):
+    class Comment(InnerDoc):
+        author = Text(fields={'raw': Keyword()})
+        content = Text(analyzer='snowball')
+        created_at = Date()
+
         def age(self):
             return datetime.now() - self.created_at
 
@@ -131,21 +143,14 @@ If you want to create a model-like wrapper around your documents, use the
             fields={'raw': Keyword()}
         )
 
-        comments = Nested(
-            doc_class=Comment,
-            properties={
-                'author': Text(fields={'raw': Keyword()}),
-                'content': Text(analyzer='snowball'),
-                'created_at': Date()
-            }
-        )
+        comments = Nested(Comment)
 
         class Meta:
             index = 'blog'
 
         def add_comment(self, author, content):
             self.comments.append(
-              {'author': author, 'content': content})
+              Comment(author=author, content=content, created_at=datetime.now()))
 
         def save(self, ** kwargs):
             self.created_at = datetime.now()
@@ -199,7 +204,7 @@ explicitly:
     first.save()
 
 
-All the metadata fields (``id``, ``parent``, ``routing``, ``index`` etc) can be
+All the metadata fields (``id``, ``routing``, ``index`` etc) can be
 accessed (and set) via a ``meta`` attribute or directly using the underscored
 variant:
 
@@ -271,15 +276,11 @@ accessed through the ``_doc_type`` attribute of the class:
 
 .. code:: python
 
-    # name of the type and index in elasticsearch
-    Post._doc_type.name
+    # name of the index in elasticsearch
     Post._doc_type.index
 
     # the raw Mapping object
     Post._doc_type.mapping
-
-    # the optional name of the parent type (if defined)
-    Post._doc_type.parent
 
 The ``_doc_type`` attribute is also home to the ``refresh`` method which will
 update the mapping on the ``DocType`` from elasticsearch. This is very useful
@@ -352,8 +353,8 @@ In the ``Meta`` class inside your document definition you can define various
 metadata for your document:
 
 ``doc_type``
-  name of the doc_type in elasticsearch. By default it will be constructed from
-  the class name (MyDocument -> my_document)
+  name of the doc_type in elasticsearch. By default it will be set to ``doc``,
+  it is not recommended to change.
 
 ``index``
   default index for the document, by default it is empty and every operation
@@ -366,8 +367,15 @@ metadata for your document:
   optional instance of ``Mapping`` class to use as base for the mappings
   created from the fields on the document class itself.
 
+``matches(self, hit)``
+  method that returns ``True`` if a given raw hit (``dict`` returned from
+  elasticsearch) should be deserialized using this ``DocType`` subclass. Can be
+  overriden, by default will just check that values for ``_index`` (including
+  any wildcard expansions) and ``_type`` in the document matches those in
+  ``_doc_type``.
+
 Any attributes on the ``Meta`` class that are instance of ``MetaField`` will be
-used to control the mapping of the meta fields (``_all``, ``_parent`` etc).
+used to control the mapping of the meta fields (``_all``, ``dynamic`` etc).
 Just name the parameter (without the leading underscore) as the field you wish
 to map and pass any parameters to the ``MetaField`` class:
 
@@ -378,7 +386,6 @@ to map and pass any parameters to the ``MetaField`` class:
 
         class Meta:
             all = MetaField(enabled=False)
-            parent = MetaField(type='blog')
             dynamic = MetaField('strict')
 
 .. _index:

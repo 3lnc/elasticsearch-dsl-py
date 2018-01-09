@@ -162,6 +162,8 @@ def test_search_index():
     assert s._index == ['i']
     s = s.index('i2')
     assert s._index == ['i', 'i2']
+    s = s.index(u'i3')
+    assert s._index == ['i', 'i2', 'i3']
     s = s.index()
     assert s._index is None
     s = search.Search(index=('i', 'i2'))
@@ -209,13 +211,14 @@ def test_doc_type_can_be_document_class():
         pass
 
     s = search.Search(doc_type=MyDocType)
-    assert s._doc_type == ['my_doc_type']
-    assert s._doc_type_map == {'my_doc_type': MyDocType}
+    assert s._doc_type == [MyDocType]
+    assert s._doc_type_map == {}
+    assert s._get_doc_type() == ['doc']
 
     s = search.Search().doc_type(MyDocType)
-    assert s._doc_type == ['my_doc_type']
-    assert s._doc_type_map == {'my_doc_type': MyDocType}
-
+    assert s._doc_type == [MyDocType]
+    assert s._doc_type_map == {}
+    assert s._get_doc_type() == ['doc']
 
 def test_sort():
     s = search.Search()

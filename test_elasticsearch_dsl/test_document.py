@@ -3,19 +3,19 @@ import codecs
 from hashlib import md5
 from datetime import datetime
 
-from elasticsearch_dsl import document, field, Mapping, utils
+from elasticsearch_dsl import document, field, Mapping, utils, InnerDoc
 from elasticsearch_dsl.exceptions import ValidationException, IllegalOperation
 
 from pytest import raises
 
-class MyInner(field.InnerObjectWrapper):
-    pass
+class MyInner(InnerDoc):
+    old_field = field.Text()
 
 class MyDoc(document.DocType):
     title = field.Keyword()
     name = field.Text()
     created_at = field.Date()
-    inner = field.Object(properties={'old_field': field.Text()}, doc_class=MyInner)
+    inner = field.Object(MyInner)
 
 class MySubDoc(MyDoc):
     name = field.Keyword()
@@ -30,13 +30,12 @@ class MyDoc2(document.DocType):
 class MyMultiSubDoc(MyDoc2, MySubDoc):
     pass
 
+class Comment(document.InnerDoc):
+    title = field.Text()
+    tags = field.Keyword(multi=True)
+
 class DocWithNested(document.DocType):
-    comments = field.Nested(
-        properties={
-            'title': field.Text(),
-            'tags': field.Keyword(multi=True)
-        }
-    )
+    comments = field.Nested(Comment)
 
 class SimpleCommit(document.DocType):
     files = field.Text(multi=True)
@@ -61,10 +60,46 @@ class SecretDoc(document.DocType):
     title = SecretField(index='no')
 
 class NestedSecret(document.DocType):
-    secrets = field.Nested(properties={'title': SecretField()})
+    secrets = field.Nested(SecretDoc)
 
 class OptionalObjectWithRequiredField(document.DocType):
     comments = field.Nested(properties={'title': field.Keyword(required=True)})
+
+def test_matches_uses_index_name_and_doc_type():
+    assert SimpleCommit._doc_type.matches({
+        '_type': 'doc',
+        '_index': 'test-git'
+    })
+    assert not SimpleCommit._doc_type.matches({
+        '_type': 'doc',
+        '_index': 'not-test-git'
+    })
+    assert MySubDoc._doc_type.matches({
+        '_type': 'my_custom_doc',
+        '_index': 'default-index'
+    })
+    assert not MySubDoc._doc_type.matches({
+        '_type': 'doc',
+        '_index': 'default-index'
+    })
+    assert not MySubDoc._doc_type.matches({
+        '_type': 'my_custom_doc',
+        '_index': 'test-git'
+    })
+
+def test_matches_accepts_wildcards():
+    class MyDoc(document.DocType):
+        class Meta:
+            index = 'my-*'
+
+    assert MyDoc._doc_type.matches({
+        '_type': 'doc',
+        '_index': 'my-index'
+    })
+    assert not MyDoc._doc_type.matches({
+        '_type': 'doc',
+        '_index': 'not-my-index'
+    })
 
 def test_assigning_attrlist_to_field():
     sc = SimpleCommit()
@@ -84,13 +119,13 @@ def test_custom_field():
     assert {'title': 'Uryyb'} == s.to_dict()
     assert s.title == 'Hello'
 
-    s.title = 'Uryyb'
+    s = SecretDoc.from_es({'_source': {'title': 'Uryyb'}})
     assert s.title == 'Hello'
     assert isinstance(s.title, Secret)
 
 def test_custom_field_mapping():
     assert {
-        'secret_doc': {
+        'doc': {
             'properties': {
                 'title': {'index': 'no', 'type': 'text'}
             }
@@ -113,7 +148,7 @@ def test_multi_works_after_doc_has_been_saved():
 
 def test_multi_works_in_nested_after_doc_has_been_serialized():
     # Issue #359
-    c = DocWithNested(comments=[{'title': 'First!'}])
+    c = DocWithNested(comments=[Comment(title='First!')])
 
     assert [] == c.comments[0].tags
     assert {'comments': [{'title': 'First!'}]} == c.to_dict()
@@ -160,7 +195,7 @@ def test_attribute_can_be_removed():
     assert 'title' not in d._d_
 
 def test_doc_type_can_be_correctly_pickled():
-    d = DocWithNested(title='Hello World!', comments=[{'title': 'hellp'}], meta={'id': 42})
+    d = DocWithNested(title='Hello World!', comments=[Comment(title='hellp')], meta={'id': 42})
     s = pickle.dumps(d)
 
     d2 = pickle.loads(s)
@@ -187,7 +222,7 @@ def test_meta_field_mapping():
             dynamic_templates = document.MetaField([42])
 
     assert {
-        'user': {
+        'doc': {
             'properties': {
                 'username': {'type': 'text'}
             },
@@ -236,12 +271,14 @@ def test_docs_with_properties():
         u.password
 
 def test_nested_can_be_assigned_to():
-    d1 = DocWithNested(comments=[{'title': 'First!'}])
+    d1 = DocWithNested(comments=[Comment(title='First!')])
     d2 = DocWithNested()
 
     d2.comments = d1.comments
+    assert isinstance(d1.comments[0], Comment)
     assert d2.comments == [{'title': 'First!'}]
     assert {'comments': [{'title': 'First!'}]} == d2.to_dict()
+    assert isinstance(d2.comments[0], Comment)
 
 def test_nested_can_be_none():
     d = DocWithNested(comments=None, title='Hello World!')
@@ -258,7 +295,7 @@ def test_nested_defaults_to_list_and_can_be_updated():
 
 def test_to_dict_is_recursive_and_can_cope_with_multi_values():
     md = MyDoc(name=['a', 'b', 'c'])
-    md.inner = [{'old_field': 'of1'}, {'old_field': 'of2'}]
+    md.inner = [MyInner(old_field='of1'), MyInner(old_field='of2')]
 
     assert isinstance(md.inner[0], MyInner)
 
@@ -276,9 +313,8 @@ def test_to_dict_ignores_empty_collections():
 def test_declarative_mapping_definition():
     assert issubclass(MyDoc, document.DocType)
     assert hasattr(MyDoc, '_doc_type')
-    assert 'my_doc' == MyDoc._doc_type.name
     assert {
-        'my_doc': {
+        'doc': {
             'properties': {
                 'created_at': {'type': 'date'},
                 'name': {'type': 'text'},
@@ -331,8 +367,9 @@ def test_document_can_be_created_dynamically():
 
 def test_invalid_date_will_raise_exception():
     md = MyDoc()
+    md.created_at = 'not-a-date'
     with raises(ValidationException):
-        md.created_at = 'not-a-date'
+        md.full_clean()
 
 def test_document_inheritance():
     assert issubclass(MySubDoc, MyDoc)
@@ -367,13 +404,11 @@ def test_meta_inheritance():
     assert issubclass(MyMultiSubDoc, MyDoc2)
     assert issubclass(MyMultiSubDoc, document.DocType)
     assert hasattr(MyMultiSubDoc, '_doc_type')
-    # doc_type should not be inherited
-    assert 'my_multi_sub_doc' == MyMultiSubDoc._doc_type.name
     # index and using should be
     assert MyMultiSubDoc._doc_type.index == MySubDoc._doc_type.index
     assert MyMultiSubDoc._doc_type.using == MySubDoc._doc_type.using
     assert {
-        'my_multi_sub_doc': {
+        'doc': {
             'properties': {
                 'created_at': {'type': 'date'},
                 'name': {'type': 'keyword'},

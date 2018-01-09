@@ -3,7 +3,7 @@ import sys
 from os.path import join, dirname
 from setuptools import setup, find_packages
 
-VERSION = (5, 4, 0, 'dev')
+VERSION = (6, 0, 1)
 __version__ = VERSION
 __versionstr__ = '.'.join(map(str, VERSION))
 
@@ -14,8 +14,11 @@ f.close()
 install_requires = [
     'six',
     'python-dateutil',
-    'elasticsearch>=6.0.0,<7.0.0'
+    'elasticsearch>=6.0.0,<7.0.0',
+    # ipaddress is included in stdlib sincxe py 3.3
+    'ipaddress; python_version<"3.3"'
 ]
+
 tests_require = [
     "mock",
     "pytest>=3.0.0",
