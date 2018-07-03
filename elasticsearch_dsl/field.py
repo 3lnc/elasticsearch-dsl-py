@@ -6,11 +6,10 @@ import collections
 from datetime import date, datetime
 
 from dateutil import parser, tz
-from six import string_types, iteritems
+from six import itervalues, string_types, iteritems
 from six.moves import map
 
-from .query import Q
-from .utils import DslBase, AttrDict, AttrList
+from .utils import DslBase, ObjectBase, AttrDict, AttrList
 from .exceptions import ValidationException
 
 unicode = type(u'')
@@ -50,8 +49,8 @@ class Field(DslBase):
 
     def __init__(self, multi=False, required=False, *args, **kwargs):
         """
-        :arg bool multi: specifies whether field can contain array of values
-        :arg bool required: specifies whether field is required
+        :param bool multi: specifies whether field can contain array of values
+        :param bool required: specifies whether field is required
         """
         self._multi = multi
         self._required = required
@@ -121,31 +120,28 @@ class Object(Field):
 
     def __init__(self, doc_class=None, dynamic=None, properties=None, **kwargs):
         """
-        :arg document.InnerDoc doc_class: base doc class that handles mapping.
+        :param document.InnerDoc doc_class: base doc class that handles mapping.
             If no `doc_class` is provided, new instance of `InnerDoc` will be created,
-            populated with `properties` and used. Can not be provided together with `properties`
-        :arg dynamic: whether new properties may be created dynamically.
+            populated with `properties` and used
+        :param dynamic: whether new properties may be created dynamically.
             Valid values are `True`, `False`, `'strict'`.
-            Can not be provided together with `doc_class`.
             See https://www.elastic.co/guide/en/elasticsearch/reference/current/dynamic.html
             for more details
-        :arg dict properties: used to construct underlying mapping if no `doc_class` is provided.
-            Can not be provided together with `doc_class`
+        :param dict properties: used to construct underlying mapping if no `doc_class` is provided
         """
-        if doc_class and (properties or dynamic is not None):
-            raise ValidationException(
-                'doc_class and properties/dynamic should not be provided together')
-        if doc_class:
-            self._doc_class = doc_class
-        else:
+        if properties is None:
+            properties = {}
+        if doc_class is None:
             # FIXME import
             from .document import InnerDoc
             # no InnerDoc subclass, creating one instead...
             self._doc_class = type('InnerDoc', (InnerDoc, ), {})
-            for name, field in iteritems(properties or {}):
+            for name, field in iteritems(properties):
                 self._doc_class._doc_type.mapping.field(name, field)
-            if dynamic is not None:
+            if dynamic:
                 self._doc_class._doc_type.mapping.meta('dynamic', dynamic)
+        else:
+            self._doc_class = doc_class
 
         self._mapping = self._doc_class._doc_type.mapping
         super(Object, self).__init__(**kwargs)
@@ -160,7 +156,7 @@ class Object(Field):
         return self._wrap({})
 
     def _wrap(self, data):
-        return self._doc_class.from_es(data, data_only=True)
+        return self._doc_class(**data)
 
     def empty(self):
         if self._multi:
@@ -170,7 +166,7 @@ class Object(Field):
     def to_dict(self):
         d = self._mapping.to_dict()
         _, d = d.popitem()
-        d.update(super(Object, self).to_dict())
+        d["type"] = self.name
         return d
 
     def _collect_fields(self):
@@ -227,8 +223,8 @@ class Date(Field):
 
     def __init__(self, default_timezone=None, *args, **kwargs):
         """
-        :arg default_timezone: timezone that will be automatically used for tz-naive values
-            May be instance of `datetime.tzinfo` or string containing TZ offset
+        :param default_timezone: timezone that will be automatically used for tz-naive values
+            May be instance of datetime.tzinfo or string containing TZ offset
         """
         self._default_timezone = default_timezone
         if isinstance(self._default_timezone, string_types):
@@ -358,15 +354,6 @@ class Completion(Field):
 
 class Percolator(Field):
     name = 'percolator'
-    _coerce = True
-
-    def _deserialize(self, data):
-        return Q(data)
-
-    def _serialize(self, data):
-        if data is None:
-            return None
-        return data.to_dict()
 
 class IntegerRange(Field):
     name = 'integer_range'
